@@ -45,7 +45,7 @@ has scanner =>
 	required => 0,
 );
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
 
 # ------------------------------------------------
 
@@ -276,6 +276,24 @@ Dies if the parse fails, or returns the result of the parse if it succeeded.
 
 =head1 Files Shipped with this Module
 
+=head2 Data Files
+
+=over 4
+
+=item o share/json.1.bnf
+
+This JSON grammar was devised by Jean-Damien Durand.
+
+=item o share/json.2.bnf
+
+This JSON grammar was devised by Jeffrey Kegler.
+
+These 2 JSON grammars are discussed in the L</FAQ> below.
+
+=back
+
+=head2 Scripts
+
 =over 4
 
 =item o scripts/demo.pl
@@ -300,16 +318,6 @@ After installation of the module, run it with:
 
 It will print the name of the path to given grammar file.
 
-=item o share/json.1.bnf
-
-This JSON grammar was devised by Peter Stuifzand.
-
-=item o share/json.2.bnf
-
-This JSON grammar was devised by Jeffrey Kegler.
-
-These 2 JSON grammars are discussed in the L</FAQ> below.
-
 =back
 
 =head1 FAQ
@@ -323,6 +331,10 @@ From V 1.01 on, I use L<File::ShareDir> and L<Module::Install> to install them.
 This a complex topic. Here are some of the issues:
 
 =over 4
+
+=item o Module::Install makes it hard to update *META.* after you update the module's version #
+
+It puts them in the dist but not in the current directory (alongside Makefile.PL, etc).
 
 =item o Install in the user's home directory, using L<File::HomeDir>
 
@@ -361,8 +373,7 @@ This reports the directory into which the grammars were installed.
 
 This is not really a fair question. They were developed under different circumstances.
 
-json.1.bnf is by Peter Stuifzand, the author of L<MarpaX::Languages::C::AST>, and was published
-originally as a gist.
+json.1.bnf is by Jean-Damien Durand, the author of L<MarpaX::Languages::C::AST>.
 
 json.1.bnf is the first attempt, when the Marpa SLIF still did not handle utf8. And it's meant to be a practical
 grammar. The sophisticated test suite is his, too.
