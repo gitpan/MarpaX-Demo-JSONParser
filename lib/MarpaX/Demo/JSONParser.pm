@@ -4,14 +4,14 @@ use strict;
 use warnings;
 
 use File::Basename; # For basename.
+use File::Slurp;    # For read_file().
 
 use Marpa::R2;
 
 use MarpaX::Demo::JSONParser::Actions;
+use MarpaX::Simple qw(gen_parser);
 
 use Moo;
-
-use Perl6::Slurp; # For slurp().
 
 has base_name =>
 (
@@ -37,6 +37,14 @@ has grammar =>
 	required => 0,
 );
 
+has parser =>
+(
+	default  => sub {return ''},
+	is       => 'rw',
+#	isa      => 'Marpa::R2::Scanless::G',
+	required => 0,
+);
+
 has scanner =>
 (
 	default  => sub {return ''},
@@ -45,24 +53,23 @@ has scanner =>
 	required => 0,
 );
 
-our $VERSION = '1.04';
+our $VERSION = '1.06';
 
 # ------------------------------------------------
 
 sub BUILD
 {
 	my($self) = @_;
-	my $bnf   = slurp $self -> bnf_file, {utf8 => 1};
+	my $bnf   = read_file($self -> bnf_file, binmode => ':utf8');
 
 	$self -> base_name(basename($self -> bnf_file) );
 
 	if ($self -> base_name eq 'json.1.bnf')
 	{
-		$self->grammar
+		$self-> grammar
 		(
 			Marpa::R2::Scanless::G -> new
 			({
-				action_object  => 'MarpaX::Demo::JSONParser::Actions',
 				default_action => 'do_first_arg',
 				source         => \$bnf,
 			})
@@ -70,7 +77,7 @@ sub BUILD
 	}
 	elsif ($self -> base_name eq 'json.2.bnf')
 	{
-		$self->grammar
+		$self-> grammar
 		(
 			Marpa::R2::Scanless::G -> new
 			({
@@ -79,18 +86,32 @@ sub BUILD
 			})
 		)
 	}
+	elsif ($self -> base_name eq 'json.3.bnf')
+	{
+		$self-> parser
+		(
+			gen_parser
+			(
+				grammar => $bnf,
+			)
+		);
+	}
 	else
 	{
-		die "Unknown BNF. Use either 'json.1.bnf' or 'json.2.bnf'\n";
+		die "Unknown BNF. Use either 'json.[123].bnf'\n";
 	}
 
-	$self -> scanner
-	(
-		Marpa::R2::Scanless::R -> new
-		({
-			grammar => $self -> grammar
-		})
-	);
+	if ($self -> base_name ne 'json.3.bnf')
+	{
+		$self -> scanner
+		(
+			Marpa::R2::Scanless::R -> new
+			({
+				grammar           => $self -> grammar,
+				semantics_package => 'MarpaX::Demo::JSONParser::Actions',
+			})
+		);
+	}
 
 } # End of BUILD.
 
@@ -153,17 +174,92 @@ sub parse
 {
 	my($self, $string) = @_;
 
-	$self -> scanner -> read(\$string);
+	if ($self -> base_name eq 'json.3.bnf')
+	{
+		my $parse_value = $self -> parser -> ($string);
 
-	my($value_ref) = $self -> scanner -> value;
+		return $self -> post_process(@{$parse_value});
+	}
+	else
+	{
+		$self -> scanner -> read(\$string);
 
-	die "Parse failed\n" if (! defined $value_ref);
+		my($value_ref) = $self -> scanner -> value;
 
-	$value_ref = $self -> eval_json($value_ref) if ($self -> base_name eq 'json.2.bnf');
+		die "Parse failed\n" if (! defined $value_ref);
 
-	return $$value_ref;
+		$value_ref = $self -> eval_json($value_ref) if ($self -> base_name eq 'json.2.bnf');
+
+		return $$value_ref;
+	}
 
 } # End of parse.
+
+# ------------------------------------------------
+
+sub post_process
+{
+	my ($self, $type, @value) = @_;
+
+	return $value[0] if $type eq 'number';
+	return undef if $type eq 'null';
+	return $value[0] if $type eq 'easy string';
+	return $self -> unescape($value[0]) if $type eq 'any char';
+	return chr(hex(substr($value[0],2))) if $type eq 'hex char';
+	return 1 if $type eq 'true';
+	return q{} if $type eq 'false';
+
+	if ($type eq 'array')
+	{
+		my @result = ();
+		push @result, $self -> post_process(@{$_}) for @{$value[0]};
+
+		return \@result;
+	}
+
+	if ($type eq 'hash')
+	{
+		my %result = ();
+
+		for my $pair (@{$value[0]})
+		{
+			my $key = $self -> post_process(@{$pair->[0]});
+			$result{$key} = $self -> post_process(@{$pair->[1]});
+		}
+
+		return \%result;
+	}
+
+	if ($type eq 'string')
+	{
+		return join q{}, map { $self -> post_process( @{$_} ) } @{$value[0]};
+	}
+
+	die join q{ }, 'post process failed:', $type, @value;
+
+} # End of post_process.
+
+# ------------------------------------------------
+
+sub unescape
+{
+	my($self, $char) = @_;
+
+	return "\b" if $char eq 'b';
+	return "\f" if $char eq 'f';
+	return "\n" if $char eq 'n';
+	return "\r" if $char eq 'r';
+	return "\t" if $char eq 't';
+	return '/'  if $char eq '/';
+	return '\\' if $char eq '\\';
+	return '"'  if $char eq '"';
+
+	# If the character is not legal, return it anyway
+	# As an alternative, we could fail here.
+
+	return $char;
+
+} # End of unescape.
 
 # ------------------------------------------------
 
@@ -193,18 +289,27 @@ C<MarpaX::Demo::JSONParser> - A JSON parser with a choice of grammars
 	my($bnf_file) = File::ShareDir::dist_file($app_name, $bnf_name);
 	my($string)   = '{"test":"1.25e4"}';
 
+	my($message);
 	my($result);
 
 	# Use try to catch die.
 
 	try
 	{
-		$result = MarpaX::Demo::JSONParser -> new(bnf_file => $bnf_file) -> parse($string);
+		$message = '';
+		$result  = MarpaX::Demo::JSONParser -> new(bnf_file => $bnf_file) -> parse($string);
+	}
+	catch
+	{
+		$message = $_;
+		$result  = 0;
 	};
 
-	print $result ? "Result: test => $$result{test}. Expect: 1.25e4. \n" : "Parse failed. \n";
+	print $result ? "Result: test => $$result{test}. Expect: 1.25e4. \n" : "Parse failed. $message";
 
 This script ships as scripts/demo.pl.
+
+You can test failure by deleting the '{' character in line 17 of demo.pl and re-running it.
 
 See also t/basic.tests.t for more sample code.
 
@@ -257,7 +362,7 @@ Key-value pairs accepted in the parameter list (see corresponding methods for de
 
 Specify the name of the file containing your Marpa::R2-style grammar.
 
-See data/json.1.bnf and data/json.2.bnf for the 2 cases handled by the code.
+See data/json.1.bnf, data/json.2.bnf and data/json.3.bnf for the cases handled by the code.
 
 This option is mandatory.
 
@@ -278,6 +383,8 @@ Dies if the parse fails, or returns the result of the parse if it succeeded.
 
 =head2 Data Files
 
+These JSON grammars are discussed in the L</FAQ> below.
+
 =over 4
 
 =item o share/json.1.bnf
@@ -288,7 +395,9 @@ This JSON grammar was devised by Peter Stuifzand.
 
 This JSON grammar was devised by Jeffrey Kegler.
 
-These 2 JSON grammars are discussed in the L</FAQ> below.
+=item o share/json.3.bnf
+
+This JSON grammar was devised by Jeffrey Kegler.
 
 =back
 
@@ -314,7 +423,8 @@ After installation of the module, run it with:
 
 	shell> perl scripts/find.grammars.pl (Defaults to json.1.bnf)
 	shell> perl scripts/find.grammars.pl json.1.bnf
-	shell> perl scripts/find.grammars.pl json.2.bnf
+
+Or use json.2.bnf or json.2.bnf.
 
 It will print the name of the path to given grammar file.
 
@@ -373,21 +483,27 @@ This reports the directory into which the grammars were installed.
 
 This is not really a fair question. They were developed under different circumstances.
 
-json.1.bnf is by Peter Stuifzand.
+=over 4
+
+=item o json.1.bnf is by Peter Stuifzand.
 
 json.1.bnf is the first attempt, when the Marpa SLIF still did not handle utf8. And it's meant to be a practical
 grammar. The sophisticated test suite is his, too.
 
-json.2.bnf is by Jeffrey Kegler, the author of L<Marpa::R2>.
+=item o json.2.bnf is by Jeffrey Kegler, the author of L<Marpa::R2>.
 
 json.2.bnf was written later, after Jeffey had a chance to study json.1.bnf. He used it to help optimise Marpa,
 but with a minimal test suite, so it had a different purpose.
 
 I (Ron) converted their code into forms suitable for building this module.
 
+=item o json.3.bnf is by Jeffrey Kegler.
+
+He developed this in August, 2014, after recent significant progress in the writing of Marpa.
+
 =head2 Where is Marpa's Homepage?
 
-L<http://jeffreykegler.github.io/Ocean-of-Awareness-blog/>.
+L<http://savage.net.au/Marpa.html>.
 
 =head2 Are there any articles discussing Marpa?
 
